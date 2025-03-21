@@ -43,22 +43,11 @@ i_pi_out = 0 # Output of the voltage PI controller
 kp = 100 # Boost Proportional Gain
 ki = 300 # Boost Integral Gain
 
-# Gains etc for the PID controller - Volatge
-v_ref = 0 # Voltage reference for the CL modes
-v_err = 0 # Voltage error
-v_err_int = 0 # Voltage error integral
-v_pi_out = 0 # Output of the voltage PI controller
-kp = 100 # Boost Proportional Gain
-ki = 30 # Boost Integral Gain
-
 # 1 - Charge
 # 2 - Full
 # 3 - Discharge
 # 4 - Empty
 state = 4
-
-
-kdroop = 1 # droop gain
 
 # Basic signals to control logic flow
 global timer_elapsed
@@ -127,6 +116,7 @@ Vrecharge = 3.9
 Chargetimeout = 1000
 Icharge = 0.5 #1Ah battery
 Icutoff = 0.1
+Igrid = 0.75
 Vuvp = 3.5
 Vgrid = 12
 
@@ -145,8 +135,6 @@ while True:
         
         # This starts a 1kHz timer which we use to control the execution of the control loops and sampling
         loop_timer = Timer(mode=Timer.PERIODIC, freq=1000, callback=tick)
-
-        v_ref = Vcharge # This saturation function means that the limiter only acts one way (same as in OL) 
     
     # If the timer has elapsed it will execute some functions, otherwise it skips everything and repeats until the timer elapses
     if timer_elapsed == 1: # This is executed at 1kHz
@@ -172,20 +160,20 @@ while True:
                 
         if state == 1: # charging
             
-            if iL > Icharge: # Current limiting function
-                v_ref = v_ref - 0.001 # if there is too much current, knock down the reference voltage (note that its the reference not the actual duty cycle that gets modified)
+            if vb < Vcharge - 0.01: # Battery voltage too low
+                i_ref = i_ref + 0.001 # increase charge current
                 OC = 1 # Set the OC flag
-            elif iL < Icharge - 0.01: # A little hysteresis so it doesnt oscillate around the edge of current limit
-                v_ref = v_ref + 0.001  # We are now below the current limit so bring the reference back up
+            elif vb > Vcharge: # Battery voltage too high
+                i_ref = i_ref - 0.001  # Reduce Current
                 OC = 0 # Reset the OC flag
             
-            v_ref = saturate(v_ref,Vcharge, 0)                  
-            v_err = v_ref-vb # calculate the error in voltage
-            v_err_int = v_err_int + v_err # add it to the integral error
-            v_err_int = saturate(v_err_int, 10000, -10000) # saturate the integral error
-            v_pi_out = (kp*v_err)+(ki*v_err_int) # Calculate a PI controller output
+            i_ref = saturate(iref, Icharge, 0)
+            i_err = i_ref-iL # calculate the error in voltage
+            i_err_int = i_err_int + i_err # add it to the integral error
+            i_err_int = saturate(i_err_int, 10000, -10000) # saturate the integral error
+            i_pi_out = (kp*i_err)+(ki*i_err_int) # Calculate a PI controller output
             
-            pwm_out = saturate(v_pi_out,max_pwm,min_pwm) # Saturate that PI output
+            pwm_out = saturate(i_pi_out,max_pwm,min_pwm) # Saturate that PI output
             duty = int(65536-pwm_out) # Invert because reasons
             pwm.duty_u16(duty) # Send the output of the PI controller out as PWM
             
@@ -232,20 +220,19 @@ while True:
 
             #discharge - boost closed loop constant 
 
-            iL = -iL
-            
-            if iL > 1: # Current limiting function
-                v_ref = v_ref - 0.1 # if there is too much current, knock down the reference voltage
+            #implement droop control here if required
+            if va < Vgrid - 0.1: # Grid voltage too low
+                i_ref = i_ref - 0.01 # Increase output current (current is reversed)
                 OC = 1 # Set the OC flag
-            elif iL < 0.9: # A little hysteresis so it doesnt oscillate around the edge of current limit
-                v_ref = v_ref + 0.1  # We are now below the current limit so bring the reference back up
+            elif va > Vgrid: # Grid voltage too high
+                i_ref = i_ref + 0.01  # Reduce output current
                 OC = 0 # Reset the OC flag
                     
-            v_ref = saturate(v_ref, (Vgrid), 0)
-            v_err = v_ref-va #error in voltage
-            v_err_int = v_err_int + v_err #add it to the integral error
-            v_err_int = saturate(v_err_int, 10000, -10000) #saturate the integral error
-            v_pi_out = (kp*v_err)+(ki*v_err_int) # PI Controller maths
+            i_ref = saturate(iref, 0, -Igrid)
+            i_err = i_ref-iL # calculate the error in voltage
+            i_err_int = i_err_int + i_err # add it to the integral error
+            i_err_int = saturate(i_err_int, 10000, -10000) # saturate the integral error
+            i_pi_out = (kp*i_err)+(ki*i_err_int) # Calculate a PI controller output
             
             # Saturate the PI output and send it out to the real world
             pwm_out = saturate(v_pi_out,max_pwm,min_pwm)
